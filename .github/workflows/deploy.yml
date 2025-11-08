@@ -1,10 +1,13 @@
 name: Deploy to GitHub Pages and Inject Secrets
-on:
+on :
 push:
 branches:
-- main # or master - adjust this to your default branch name workflow _dispatch:
-permissions:
-contents: read pages: write id-token: write
+- main # Adjust to 'master'
+if needed
+workflow_dispatch:
+permissions: contents:
+read
+pages: write id-token: write
 concurrency:
 group: "pages"
 cancel-in-progress: true
@@ -12,22 +15,19 @@ jobs: build-and-deploy:
 runs-on: ubuntu-latest steps:
 - name: Checkout code
 uses: actions/checkout@v4
-# CRITICAL STEP: Replace the
-placeholder with the secret key
-# This uses the 'sed' command to
-find "ȘSGEMINI_API_KEYS$" in index.html
-# and replace it with the secure
-secret stored in GitHub.
+# CRITICAL STEP: Replace the simple
+placeholder with the secret key.
+# The simplified search pattern
+'ŞGEMINI_API_KEY$' avoids complex escaping issues.
 - name: Inject API Key
 into index.html
 run:
-ISn secrets. GEMINI_API_
-index.html
+sed -i 's|\$GEMINI_API_KEY\$|$
+{f secrets. GEMINI_API_KEY }}Tg' Index.html
 - name: Setup Pages
 uses: actions/configure-pages@v5
 - name: Upload artifact uses: actions/upload-pages-
-artifact@v3 with:
-# Upload the root directory
-where the index.html file is path:
-'./'
+artifact@v3
+with:
+path:./'
 - name: Deploy to GitHub Pages id: deployment uses: actions/deploy-pages@v4
