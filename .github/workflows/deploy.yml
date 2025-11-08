@@ -2,8 +2,7 @@ name: Deploy to GitHub Pages and Inject Secrets
 on :
 push:
 branches:
-- main # Adjust to 'master'
-if needed
+- main # Adjust to 'master'if needed
 workflow_dispatch:
 permissions: contents:
 read
