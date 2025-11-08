@@ -98,7 +98,8 @@
 
         // LLM Configuration
         const MODEL_NAME = 'gemini-2.5-flash-preview-09-2025';
-        const API_KEY = "$$GEMINI_API_KEY$$"; // GitHub Action will replace this placeholder
+        // Change to this (simple placeholder)
+        const API_KEY = "$GEMINI_API_KEY$";
         const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${API_KEY}`;
         const MAX_RETRIES = 5;
 
