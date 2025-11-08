@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Lesson Analyst</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load html2pdf for PDF generation -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f8fafc; /* Slate-50 */
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 600px;
+        }
+        .mic-active {
+            animation: pulse-red 1.5s infinite;
+        }
+        @keyframes pulse-red {
+            0%, 100% { background-color: #ef4444; } /* Red-500 */
+            50% { background-color: #dc2626; } /* Red-600 */
+        }
+    </style>
+</head>
+<body class="p-4 md:p-8">
+
+    <div class="container mx-auto bg-white shadow-2xl rounded-xl p-6 md:p-8 space-y-6">
+
+        <header class="text-center pb-4 border-b border-gray-200">
+            <h1 class="text-3xl font-extrabold text-indigo-700">AI Lesson Analyst</h1>
+            <p class="text-sm text-gray-600 mt-1">Automatically generates post-lesson notes and feedback from a live transcript.</p>
+        </header>
+
+        <!-- Status/Error Message Box -->
+        <div id="status-box" class="hidden p-4 rounded-lg text-sm transition duration-300" role="alert">
+            <p id="status-text" class="font-medium"></p>
+        </div>
+
+        <!-- Main Control Button -->
+        <button id="main-control-btn" 
+                class="w-full py-4 text-xl font-bold rounded-lg shadow-lg transition duration-200 bg-green-600 hover:bg-green-700 text-white"
+                onclick="toggleLogging()">
+            Start Lesson Logging
+        </button>
+
+        <!-- Live Transcript Display (Hidden initially) -->
+        <div id="transcript-container" class="hidden space-y-4">
+            <h2 class="text-xl font-semibold text-gray-700 border-b pb-2">Live Transcript Accumulation</h2>
+            <div class="flex items-center text-sm text-gray-500">
+                <svg id="mic-icon" class="w-5 h-5 mr-2 text-red-500" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" clip-rule="evenodd"></path></svg>
+                <span id="listening-status">Listening...</span>
+            </div>
+            <textarea id="full-transcript" rows="8" readonly 
+                      class="w-full p-3 border border-gray-300 bg-gray-50 rounded-lg text-sm text-gray-800"></textarea>
+            <p class="text-xs text-gray-500">Total Recorded Characters: <span id="char-count">0</span></p>
+        </div>
+
+        <!-- AI Analysis Results Section -->
+        <div id="analysis-results-container" class="hidden space-y-4 pt-6 border-t border-gray-200">
+            <h2 class="text-2xl font-bold text-indigo-700">AI Lesson Summary</h2>
+            
+            <!-- NEW DOWNLOAD BUTTON -->
+            <button id="download-analysis-btn" 
+                    class="w-full py-2 text-md font-bold rounded-lg shadow-md transition duration-200 bg-blue-600 hover:bg-blue-700 text-white"
+                    onclick="downloadAnalysisPDF()">
+                Download Analysis PDF
+            </button>
+
+            <div id="analysis-output" class="bg-indigo-50 p-4 rounded-lg shadow-inner">
+                <p class="text-gray-500">Analysis will appear here after processing.</p>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        // --- Global State ---
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        let recognition = null;
+        let isListening = false;
+        let fullTranscript = "";
+        
+        // --- DOM Elements ---
+        const mainControlBtn = document.getElementById('main-control-btn');
+        const statusBox = document.getElementById('status-box');
+        const statusText = document.getElementById('status-text');
+        const transcriptContainer = document.getElementById('transcript-container');
+        const fullTranscriptEl = document.getElementById('full-transcript');
+        const charCountEl = document.getElementById('char-count');
+        const analysisResultsContainer = document.getElementById('analysis-results-container');
+        const analysisOutputEl = document.getElementById('analysis-output');
+        const listeningStatusEl = document.getElementById('listening-status');
+        const micIcon = document.getElementById('mic-icon');
+        const downloadAnalysisBtn = document.getElementById('download-analysis-btn');
+
+        // LLM Configuration
+        const MODEL_NAME = 'gemini-2.5-flash-preview-09-2025';
+        const API_KEY = ""; // Canvas environment handles this
+        const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${API_KEY}`;
+        const MAX_RETRIES = 5;
+
+        // --- Utility Functions ---
+        
+        /**
+         * Clears all status and displays a new message.
+         * @param {string} text The message text.
+         * @param {string} type 'info', 'success', or 'error'.
+         */
+        function displayStatus(text, type = 'info') {
+            statusText.textContent = text;
+            statusBox.classList.remove('hidden', 'bg-red-100', 'text-red-700', 'bg-green-100', 'text-green-700', 'bg-blue-100', 'text-blue-700');
+            
+            if (type === 'error') {
+                statusBox.classList.add('bg-red-100', 'text-red-700');
+            } else if (type === 'success') {
+                statusBox.classList.add('bg-green-100', 'text-green-700');
+            } else {
+                statusBox.classList.add('bg-blue-100', 'text-blue-700');
+            }
+        }
+
+        // --- Speech Recognition Logic ---
+
+        function startLogging() {
+            if (!SpeechRecognition) {
+                displayStatus("Speech recognition is not supported in this browser.", 'error');
+                return;
+            }
+
+            recognition = new SpeechRecognition();
+            recognition.continuous = true;
+            recognition.interimResults = false; // Only use final results for cleaner transcript
+            recognition.lang = 'en-US';
+            fullTranscript = "";
+
+            recognition.onstart = () => {
+                isListening = true;
+                mainControlBtn.textContent = "End Lesson & Analyze Notes";
+                mainControlBtn.classList.remove('bg-green-600', 'hover:bg-green-700');
+                mainControlBtn.classList.add('bg-red-600', 'hover:bg-red-700', 'mic-active');
+                transcriptContainer.classList.remove('hidden');
+                analysisResultsContainer.classList.add('hidden');
+                downloadAnalysisBtn.classList.add('hidden'); // Hide download button until analysis is ready
+                listeningStatusEl.textContent = "Listening to the lesson...";
+                micIcon.classList.remove('hidden');
+                displayStatus("Logging started. Microphone is active.", 'info');
+                fullTranscriptEl.value = "";
+                charCountEl.textContent = "0";
+            };
+
+            recognition.onresult = (event) => {
+                let finalTranscriptChunk = '';
+                for (let i = event.resultIndex; i < event.results.length; ++i) {
+                    if (event.results[i].isFinal) {
+                        // Append text, ensuring separation from previous blocks
+                        finalTranscriptChunk += event.results[i][0].transcript + '. ';
+                    }
+                }
+                
+                if (finalTranscriptChunk) {
+                    fullTranscript += finalTranscriptChunk;
+                    fullTranscriptEl.value = fullTranscript;
+                    charCountEl.textContent = fullTranscript.length;
+                    // Auto-scroll the textarea to the bottom
+                    fullTranscriptEl.scrollTop = fullTranscriptEl.scrollHeight;
+                }
+            };
+
+            recognition.onerror = (event) => {
+                console.error("Speech Error:", event.error);
+                // Only automatically stop if a serious error occurs, otherwise let the user control it
+                if (event.error !== 'no-speech') {
+                    stopLogging(); 
+                    displayStatus(`Speech error: ${event.error}. Please try starting again.`, 'error');
+                }
+            };
+
+            recognition.onend = () => {
+                if (isListening) {
+                    // This often means a timeout. Restart to maintain continuous listening.
+                    try {
+                        recognition.start();
+                    } catch (e) {
+                         // Prevent continuous restart errors if user quickly ends logging
+                         if (e.name !== 'InvalidStateError') {
+                            displayStatus("Listening session timed out. Tap 'End Lesson' if you are finished.", 'error');
+                         }
+                    }
+                }
+            };
+            
+            try {
+                 recognition.start();
+            } catch (e) {
+                if (e.name === 'InvalidStateError') {
+                    // If start() is called while already starting/active, ignore.
+                } else {
+                    console.error("Failed to start recognition:", e);
+                    displayStatus("Failed to access microphone. Check permissions.", 'error');
+                }
+            }
+        }
+
+        function stopLogging() {
+            if (recognition) {
+                recognition.stop();
+            }
+            isListening = false;
+            
+            mainControlBtn.textContent = "Start Lesson Logging";
+            mainControlBtn.classList.remove('bg-red-600', 'hover:bg-red-700', 'mic-active');
+            mainControlBtn.classList.add('bg-green-600', 'hover:bg-green-700');
+            micIcon.classList.add('hidden');
+        }
+
+        function toggleLogging() {
+            if (isListening) {
+                stopLogging();
+                if (fullTranscript.length > 50) {
+                    analyzeTranscript(fullTranscript);
+                } else {
+                    displayStatus("Transcript too short to analyze. Start logging and speak during the lesson!", 'info');
+                }
+            } else {
+                startLogging();
+            }
+        }
+
+        // --- LLM Analysis Logic (Gemini API) ---
+
+        async function analyzeTranscript(transcript) {
+            displayStatus("Processing lesson transcript with AI... Please wait.", 'info');
+            analysisResultsContainer.classList.remove('hidden');
+            analysisOutputEl.innerHTML = '<div class="flex justify-center items-center py-4"><svg class="animate-spin -ml-1 mr-3 h-5 w-5 text-indigo-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg><p>Analyzing 📝</p></div>';
+            
+            const systemPrompt = "You are an experienced educational analyst. Your task is to review the provided transcript of a classroom lesson and generate concise, actionable notes for the teacher. Focus only on student participation and engagement. Output the analysis in clean Markdown format with the following three headings:\n\n1. Areas of Student Improvement (What concepts were mastered or clearly understood?)\n2. Problem Areas (What concepts required extra attention or review?)\n3. Actionable Next Steps (Specific suggestions for the next lesson based on this analysis).\n\nEnsure the response is high-quality, professional, and directly useful for planning the next lesson.";
+            
+            const userQuery = `Analyze the following lesson transcript and provide structured feedback:\n\n---\n\n${transcript}`;
+            
+            const payload = {
+                contents: [{ parts: [{ text: userQuery }] }],
+                systemInstruction: { parts: [{ text: systemPrompt }] },
+            };
+
+            for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+                try {
+                    const response = await fetch(API_URL, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (!response.ok) {
+                        if (response.status === 429 && attempt < MAX_RETRIES - 1) {
+                            const delay = Math.pow(2, attempt) * 1000;
+                            await new Promise(resolve => setTimeout(resolve, delay));
+                            continue; // Retry
+                        }
+                        throw new Error(`HTTP error! Status: ${response.status}`);
+                    }
+
+                    const result = await response.json();
+                    const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
+
+                    if (text) {
+                        analysisOutputEl.innerHTML = formatMarkdown(text);
+                        downloadAnalysisBtn.classList.remove('hidden'); // Show download button
+                        displayStatus("Analysis complete! Review your notes and download the PDF below.", 'success');
+                        return;
+                    } else {
+                         throw new Error("API response was empty or malformed.");
+                    }
+
+                } catch (error) {
+                    console.error("API Call failed:", error);
+                    if (attempt === MAX_RETRIES - 1) {
+                        analysisOutputEl.innerHTML = `<p class="text-red-700 font-bold">Analysis failed after ${MAX_RETRIES} attempts. Error: ${error.message}</p>`;
+                        displayStatus("AI analysis failed. Check the console for API errors.", 'error');
+                        return;
+                    }
+                    // Backoff retry handled by the loop logic
+                }
+            }
+        }
+        
+        /**
+         * Simple function to convert basic Markdown to HTML for display.
+         */
+        function formatMarkdown(markdown) {
+            let html = markdown;
+            // Convert ## headings to h3/strong
+            html = html.replace(/^##\s*(.*)$/gm, '</strong><h3 class="text-xl font-bold text-indigo-700 mt-4 mb-2">$1</h3><strong>');
+            // Convert * lists to ul/li
+            html = html.replace(/^\*\s*(.*)$/gm, '<li>$1</li>');
+            html = html.replace(/<p>(<li>.*<\/li>)<\/p>/s, '<ul class="list-disc list-inside space-y-1">$1</ul>');
+            
+            // Convert remaining text paragraphs
+            html = html.split('\n').map(p => {
+                if (p.trim() && !p.startsWith('<h3') && !p.startsWith('<li>') && !p.startsWith('<ul')) {
+                    return `<p class="mb-2">${p}</p>`;
+                }
+                return p;
+            }).join('');
+            
+            // Clean up and wrap
+            html = `<div class="p-2">${html}</div>`;
+            return html;
+        }
+
+        // --- PDF Download Function ---
+
+        /**
+         * Downloads the AI lesson analysis as a compact PDF.
+         */
+        window.downloadAnalysisPDF = function() {
+            // Target the analysis results container
+            const element = document.getElementById('analysis-results-container');
+            const date = new Date().toLocaleDateString('en-US', { dateStyle: 'long' });
+
+            // Create a temporary clone for better PDF header formatting and remove the button
+            const contentToPrint = element.cloneNode(true);
+            
+            // Remove the download button from the cloned content before PDF generation
+            const tempDownloadButton = contentToPrint.querySelector('#download-analysis-btn');
+            if (tempDownloadButton) {
+                tempDownloadButton.remove();
+            }
+
+            // Prepend a cleaner title/metadata to the content
+            const header = document.createElement('div');
+            header.innerHTML = `
+                <div style="padding-bottom: 20px; border-bottom: 1px solid #ccc; margin-bottom: 20px;">
+                    <h1 style="font-size: 28px; font-weight: 700; margin: 0; color: #1e3a8a;">AI Lesson Analysis Report</h1>
+                    <p style="font-size: 14px; color: #4b5563;">Date of Analysis: ${date}</p>
+                </div>
+            `;
+            contentToPrint.insertBefore(header, contentToPrint.firstChild);
+            
+            // Hide the live transcript container if it somehow gets included
+            const liveTranscript = contentToPrint.querySelector('#transcript-container');
+            if (liveTranscript) liveTranscript.style.display = 'none';
+
+            const options = {
+                margin: 10,
+                filename: 'AI_Lesson_Analysis_' + new Date().toISOString().slice(0, 10) + '.pdf',
+                image: { type: 'jpeg', quality: 0.98 },
+                html2canvas: { scale: 2 },
+                jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+            };
+
+            displayStatus("Generating PDF...", 'info');
+            
+            html2pdf().from(contentToPrint).set(options).save().then(() => {
+                displayStatus("Analysis PDF downloaded successfully!", 'success');
+            }).catch(error => {
+                console.error("PDF generation failed:", error);
+                displayStatus("Failed to generate PDF. Check console for details.", 'error');
+            });
+        }
+
+
+        // --- Initialization ---
+        window.onload = () => {
+            if (!SpeechRecognition) {
+                displayStatus("⚠️ Device Not Fully Supported: Speech dictation will not work. Please use a Chrome-based browser.", 'error');
+                mainControlBtn.disabled = true;
+            } else {
+                displayStatus("Tap 'Start Lesson Logging' when the lesson begins.", 'info');
+            }
+        };
+
+    </script>
+</body>
+</html>
